@@ -17,16 +17,34 @@
 # Optional build args to skip vLLM or SGLang dependencies:
 #   --build-arg SKIP_VLLM_BUILD=1    # Skip vLLM dependencies
 #   --build-arg SKIP_SGLANG_BUILD=1  # Skip SGLang dependencies
+#
+# Run example (GRPO smoke test):
+#   podman run -it --rm \
+#     --device nvidia.com/gpu=all \
+#     --shm-size=24g \
+#     --ulimit memlock=-1 \
+#     --ulimit stack=67108864 \
+#     -e HF_TOKEN="${HF_TOKEN}" \
+#     -e HF_HOME=/root/.cache/huggingface \
+#     -e HF_DATASETS_CACHE=/root/.cache/huggingface/datasets \
+#     -e WANDB_API_KEY="${WANDB_API_KEY}" \
+#     -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
+#     -w /opt/nemo-rl \
+#     <registry>/nemo-rl:latest \
+#     uv run examples/run_grpo.py --config=./examples/configs/grpo_smoke.yaml
 
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.03-cuda13.2-devel-ubuntu24.04
 
 # Pull NeMo RL source with a plain git clone. Podman does not support
 # Docker's ADD --keep-git-dir=true for git URLs, so we clone explicitly.
 # --depth 1 is used because this image does not need full git history.
+# Submodules are required (pyproject.toml references 3rdparty/... paths).
 FROM docker.io/alpine/git AS nemo-rl
-ARG NRL_GIT_REF=podman
+ARG NRL_GIT_REF=main
 RUN git clone --depth 1 --branch "${NRL_GIT_REF}" \
-        https://github.com/philip-paul-mueller/RL /nemo-rl
+        https://github.com/NVIDIA-NeMo/RL.git /nemo-rl && \
+    cd /nemo-rl && \
+    git submodule update --init --recursive
 WORKDIR /nemo-rl
 
 # Empty default; CI overrides with --build-context to inject pre-compiled wheels
