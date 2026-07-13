@@ -201,7 +201,7 @@ modelopt = ["nvidia-modelopt"]
 nvrx = [
   "nvidia-resiliency-ext==0.6.0",
 ] # for ft_launcher (fault-tolerant training launcher)
-nemo_gym = ["nemo_gym"]
+#nemo_gym = ["nemo_gym"]
 
 [dependency-groups]
 
@@ -253,7 +253,7 @@ test = [
 megatron-core = { path = "3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/3rdparty/Megatron-LM", editable = true }
 nemo-automodel = { path = "3rdparty/Automodel-workspace/Automodel", editable = true }
 megatron-bridge = { path = "3rdparty/Megatron-Bridge-workspace", editable = true }
-nemo_gym = { workspace = true }
+#nemo_gym = { workspace = true }
 nemo_run = { git = "https://github.com/NVIDIA-NeMo/Run", rev = "414f0077c648fde2c71bb1186e97ccbf96d6844c" }
 # torch/torchaudio/torchvision/triton all come from the torch index in order to pick up aarch64 wheels
 torch = [
@@ -594,7 +594,7 @@ markers = [
   "automodel: marks tests that require the automodel extra",
   "vllm: marks tests that require the vllm extra",
   "sglang: marks tests that require the sglang extra",
-  "nemo_gym: marks tests that require the nemo_gym extra",
+  #"nemo_gym: marks tests that require the nemo_gym extra",
 ]
 
 [tool.pyrefly]
