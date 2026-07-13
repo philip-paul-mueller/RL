@@ -282,9 +282,12 @@ ENV LD_LIBRARY_PATH="/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:${LD_LIBRARY_P
 
 # Copy in source from build context (defaults to cloned repo, can be overridden)
 # Exclude pyproject.toml and uv.lock since those may be altered by build-custom-vllm.sh.
-# Podman does not support COPY --exclude, so we copy everything and remove them.
-COPY --from=nemo-rl /nemo-rl/. /opt/nemo-rl
-RUN rm -f /opt/nemo-rl/pyproject.toml /opt/nemo-rl/uv.lock
+# The hermetic stage already placed (possibly modified) versions of those files in
+# /opt/nemo-rl; we must preserve them so uv still recognizes the project root.
+# Podman lacks COPY --exclude, so copy to a temp dir and rsync while excluding.
+COPY --from=nemo-rl /nemo-rl/. /tmp/nemo-rl-src/
+RUN rsync -a --exclude=pyproject.toml --exclude=uv.lock /tmp/nemo-rl-src/ /opt/nemo-rl/ && \
+    rm -rf /tmp/nemo-rl-src
 
 RUN <<"EOF" bash -exu
 NEGATIVE_FILTERS=""
