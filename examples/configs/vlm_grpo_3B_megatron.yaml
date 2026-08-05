@@ -17,6 +17,7 @@ policy:
       lr_warmup_init: 2.0e-08
     distributed_data_parallel_config:
       overlap_grad_reduce: false
+      use_megatron_fsdp: false
 logger:
   wandb:
     name: vlm-grpo-3b-megatron

@@ -8,6 +8,7 @@ policy:
   megatron_cfg:
     distributed_data_parallel_config:
       grad_reduce_in_fp32: true
+      use_megatron_fsdp: false
     enabled: true
     optimizer:
       adam_eps: 1.0e-08

@@ -47,6 +47,7 @@ policy:
       lr_warmup_init: 1.0e-7
     distributed_data_parallel_config:
       overlap_grad_reduce: false
+      use_megatron_fsdp: false
 
 data:
   num_workers: 0

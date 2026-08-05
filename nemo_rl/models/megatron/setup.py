@@ -1154,6 +1154,9 @@ def _create_megatron_config(
         dist_cfg.use_gloo_process_groups = config["megatron_cfg"][
             "use_gloo_process_groups"
         ]
+    dist_cfg.use_megatron_fsdp = config["megatron_cfg"][
+        "distributed_data_parallel_config"
+    ].get("use_megatron_fsdp", False)
 
     return ConfigContainer(
         model=model_cfg,
@@ -1455,6 +1458,7 @@ def setup_model_and_optimizer(
     model = get_model(
         megatron_cfg.model,
         megatron_cfg.ddp,
+        use_megatron_fsdp=megatron_cfg.dist.use_megatron_fsdp,
         use_torch_fsdp2=megatron_cfg.dist.use_torch_fsdp2,
         overlap_param_gather_with_optimizer_step=megatron_cfg.optimizer.overlap_param_gather_with_optimizer_step,
         data_parallel_random_init=megatron_cfg.rng.data_parallel_random_init,
@@ -1706,6 +1710,7 @@ def setup_reference_model_state(
         reference_model = get_model(
             megatron_cfg.model,
             megatron_cfg.ddp,
+            use_megatron_fsdp=megatron_cfg.dist.use_megatron_fsdp,
             use_torch_fsdp2=megatron_cfg.dist.use_torch_fsdp2,
             overlap_param_gather_with_optimizer_step=megatron_cfg.optimizer.overlap_param_gather_with_optimizer_step,
             data_parallel_random_init=megatron_cfg.rng.data_parallel_random_init,

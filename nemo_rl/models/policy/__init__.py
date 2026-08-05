@@ -281,6 +281,11 @@ class MegatronDDPConfig(TypedDict):
     overlap_param_gather: bool
     use_custom_fsdp: bool
     data_parallel_sharding_strategy: str
+    # Use Megatron's Fully Sharded Data Parallel (shards params+grads across DP).
+    # When true, Megatron-Bridge selects FullyShardedDataParallel instead of legacy
+    # DistributedDataParallel. This is required for very large models where the
+    # unsharded param+grad buffer does not fit in GPU memory.
+    use_megatron_fsdp: NotRequired[bool]
 
 
 class Fp8Config(TypedDict):
