@@ -712,6 +712,13 @@ def _apply_parallelism_config(model_cfg: Any, config: PolicyConfig) -> None:
     model_cfg.sequence_parallel = config["megatron_cfg"]["sequence_parallel"]
     model_cfg.context_parallel_size = config["megatron_cfg"]["context_parallel_size"]
 
+    # Optional: instantiate the model on CPU then move to GPU in one shot.
+    # Presence-checked so configs that omit it keep Megatron-Bridge's default.
+    if "use_cpu_initialization" in config["megatron_cfg"]:
+        model_cfg.use_cpu_initialization = config["megatron_cfg"][
+            "use_cpu_initialization"
+        ]
+
     if model_cfg.context_parallel_size > 1:
         # Either NeMo-RL does the packing+CP-sharding itself (classic mcore
         # GPTModel path) OR the model does it internally (mbridge VLM wrappers

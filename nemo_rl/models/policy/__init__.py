@@ -354,6 +354,11 @@ class MegatronConfig(TypedDict):
     freeze_moe_router: bool
     expert_tensor_parallel_size: int
     expert_model_parallel_size: int
+    # When True the model is instantiated on CPU and moved to GPU in one shot,
+    # which can reduce GPU fragmentation during startup compared to incremental
+    # GPU allocation. Forwarded presence-checked to Megatron-Bridge's
+    # AutoBridge.to_megatron_provider(use_cpu_initialization=...).
+    use_cpu_initialization: NotRequired[bool]
     # If True, defer the casting of logits to float32 until the backward pass.
     # If you are using logprob_chunk_size, you must set this to True.
     defer_fp32_logits: NotRequired[bool]
