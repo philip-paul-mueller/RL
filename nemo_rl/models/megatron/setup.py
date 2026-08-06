@@ -1033,12 +1033,16 @@ def _create_checkpoint_config(
     # values). async_save is presence-checked exactly like the sibling Bridge knobs
     # — no call-site default — so a config that omits the block keeps Bridge's
     # default (synchronous save).
+    #
+    # ckpt_format is forwarded so configs that enable use_megatron_fsdp can set
+    # ckpt_format: fsdp_dtensor (Megatron-Bridge asserts this combination).
     _optional_ckpt_fields = (
         "async_save",
         "ckpt_assume_constant_structure",
         "ckpt_fully_parallel_save_process_group",
         "ckpt_fully_parallel_load_process_group",
         "ckpt_fully_parallel_load_exchange_algo",
+        "ckpt_format",
     )
     for field in _optional_ckpt_fields:
         if field in cfg:
