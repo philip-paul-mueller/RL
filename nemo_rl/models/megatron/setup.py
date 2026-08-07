@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import hashlib
 import json
 import os
@@ -1773,6 +1774,15 @@ def setup_reference_model_state(
             print("Reference model not loaded")
     finally:
         clear_global_router_replay_instances()
+
+    # Release the GPU copy of the reference model before returning. The caller
+    # immediately reloads the policy's DDP buffers onto the GPU, and the
+    # DDP-wrapped reference model (own param+grad buffers, ~2x the model
+    # bytes) holds reference cycles that refcounting alone does not collect
+    # at function exit.
+    del reference_model
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return reference_state_dict
 
