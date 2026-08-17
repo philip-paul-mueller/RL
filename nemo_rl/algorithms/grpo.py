@@ -2335,8 +2335,26 @@ def refit_policy_generation(
     if isinstance(policy_generation, MegatronGeneration):
         policy_generation.suspend_for_refit()
 
-    if colocated_inference or isinstance(policy_generation, MegatronGeneration):
-        policy.offload_before_refit()
+    # Offload grad buffers before the weight transfer for ALL setups, not
+    # only colocated/Megatron generation.  The non-colocated collective
+    # broadcast packs multi-GB staging buffers (nemo_rl/utils/packed_tensor.py)
+    # on the training ranks, and a rank sitting at its post-step memory peak
+    # may have almost nothing free (GLM-5.1 700B at 384 GPUs OOM'd here with
+    # 2.7 GiB free).  The grad buffers are reloaded by prepare_for_training
+    # at the start of the next step regardless.
+    #
+    # The optimizer, however, is only moved out when the inference engine
+    # shares the training GPUs (colocated / Megatron generation) and needs
+    # every free byte of VRAM.  In the non-colocated path the freed grad
+    # buffers already provide the staging headroom, while moving the
+    # optimizer COPIES the full FP32 master+moment shards into pageable host
+    # memory on every local rank at once — on hosts with little DRAM
+    # headroom (4-rank GH200 nodes, ~403 GiB usable) that simultaneous spike
+    # host-OOMs a training node instead of saving anything.
+    policy.offload_before_refit(
+        offload_optimizer=colocated_inference
+        or isinstance(policy_generation, MegatronGeneration)
+    )
     # Colocated inference needs to prepare for generation.
     # Megatron non-colocated inference needs to enter inference mode after refit.
     if colocated_inference or isinstance(policy_generation, MegatronGeneration):
