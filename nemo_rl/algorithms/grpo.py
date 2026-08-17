@@ -5137,6 +5137,11 @@ def async_grpo_train(
         import traceback
 
         traceback.print_exc()
+        # Re-raise so the driver process exits non-zero: swallowing the
+        # exception makes every batch system (SLURM sacct, retry wrappers)
+        # record a crashed run as COMPLETED. The finally block below still
+        # runs its full cleanup before the exception propagates.
+        raise
 
     finally:
         # Finalize any pending async checkpoint before tearing down workers.
