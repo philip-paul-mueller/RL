@@ -1970,11 +1970,11 @@ class DTensorPolicyWorkerImpl(
 
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker/offload_before_refit")
-    def offload_before_refit(self) -> None:
+    def offload_before_refit(self, offload_optimizer: bool = True) -> None:
         """Offload the optimizer to the CPU."""
         self.timer.start("offload_before_refit")
         torch.randn(1).cuda()  # wake up torch allocator
-        if self.optimizer is not None:
+        if offload_optimizer and self.optimizer is not None:
             self.move_optimizer_to_device("cpu")
 
         gc.collect()

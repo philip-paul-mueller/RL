@@ -2663,8 +2663,21 @@ class MegatronPolicyWorkerImpl(
         )
 
     @wrap_with_nvtx_name("megatron_policy_worker/offload_before_refit")
-    def offload_before_refit(self):
-        """Offload the optimizer and buffers to the CPU."""
+    def offload_before_refit(self, offload_optimizer: bool = True):
+        """Offload the grad buffers and (optionally) the optimizer to the CPU.
+
+        The grad buffers are always dropped: their GPU storage is freed
+        without a host copy and prepare_for_training re-creates them zeroed.
+
+        The optimizer move is opt-out because it is a host-memory COPY, not a
+        release: move_optimizer("cpu") duplicates the FP32 master weights and
+        Adam moments into pageable host memory on every local rank at once.
+        Callers whose inference engine shares the training GPUs (colocated,
+        Megatron generation) need the VRAM and accept the host cost; the
+        non-colocated collective path only needs staging headroom that the
+        grad free already provides, and on hosts with little DRAM headroom
+        (4-rank GH200 nodes) the copy is an OOM risk instead of a saving.
+        """
         # An in-flight async checkpoint keeps references to the CUDA tensors in
         # its sharded state dict until the write is finalized. Offloading swaps
         # those tensors for CPU storage, so the checkpoint references would keep
@@ -2742,7 +2755,8 @@ class MegatronPolicyWorkerImpl(
 
         torch.randn(1).cuda()  # wake up torch allocator
         if (
-            hasattr(self, "optimizer")
+            offload_optimizer
+            and hasattr(self, "optimizer")
             and self.optimizer is not None
             and not self.optimizer_cpu_offload
         ):

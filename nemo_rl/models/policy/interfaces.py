@@ -171,7 +171,7 @@ class ColocatablePolicyInterface(PolicyInterface):
         pass
 
     @abstractmethod
-    def offload_before_refit(self) -> None:
+    def offload_before_refit(self, offload_optimizer: bool = True) -> None:
         pass
 
     @abstractmethod

@@ -1126,9 +1126,11 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         )
         return futures
 
-    def offload_before_refit(self) -> None:
+    def offload_before_refit(self, offload_optimizer: bool = True) -> None:
         """Offload the optimizer and buffers to the CPU."""
-        futures = self.worker_group.run_all_workers_single_data("offload_before_refit")
+        futures = self.worker_group.run_all_workers_single_data(
+            "offload_before_refit", offload_optimizer=offload_optimizer
+        )
         ray.get(futures)
 
     def offload_after_refit(self) -> None:
