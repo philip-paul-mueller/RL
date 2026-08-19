@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, NotRequired, Optional, TypedDict, Union
 
 import ray
@@ -201,9 +202,17 @@ class GenerationConfig(TypedDict):
     temperature: float
     top_p: float
     top_k: int | None
+    # Validation-only sampling. The exemplar YAMLs default these to the train
+    # values above via interpolation (${.temperature}, ...), so validation
+    # samples exactly like training unless overridden. Only honored on the
+    # NeMo-Gym vLLM rollout path (guarded in grpo.setup()).
+    val_temperature: float
+    val_top_p: float
+    val_top_k: int | None
     model_name: NotRequired[str]  # Not Required b/c GRPO writes this
     stop_token_ids: list[int] | None
     stop_strings: list[str] | None
+    bad_words: NotRequired[list[str] | None]
     colocated: NotRequired[ColocationConfig]
     port_range_low: NotRequired[int]
     port_range_high: NotRequired[int]
@@ -212,6 +221,36 @@ class GenerationConfig(TypedDict):
     _pad_token_id: NotRequired[int]
     # MTP draft weights arrive via refit if the trainer trains the MTP layer.
     _mtp_weights_from_refit: NotRequired[bool]
+    # Internal debug-only measurement of exact Ray generation arguments.
+    # Populated from grpo.debug_payload_metrics; not meant to be set by the user.
+    _debug_payload_metrics: NotRequired[bool]
+
+
+@dataclass
+class GenerationSamplingParams:
+    """Sampling profile threaded explicitly through rollout entry points.
+
+    Rollout callers construct one from the relevant ``GenerationConfig``
+    fields (train or validation) so the sampling used for a rollout is
+    visible at the call site instead of flowing through config side-channels.
+    Named to distinguish it from ``TrainingSamplingParams`` (train-time logit
+    filtering) and vLLM's own ``SamplingParams``.
+    """
+
+    temperature: float
+    top_p: float
+    top_k: int | None
+
+    @classmethod
+    def from_generation_config(
+        cls, generation_config: "GenerationConfig"
+    ) -> "GenerationSamplingParams":
+        """Build the train-time sampling profile from a generation config."""
+        return cls(
+            temperature=generation_config["temperature"],
+            top_p=generation_config["top_p"],
+            top_k=generation_config["top_k"],
+        )
 
 
 class GenerationDatumSpec(TypedDict):
@@ -306,6 +345,15 @@ class GenerationOutputSpec(TypedDict):
     __extra__: Any
 
 
+@dataclass(frozen=True)
+class CollectiveSenderSpec:
+    """Policy-side protocol and packing geometry for NCCL weight transfer."""
+
+    nccl_peer: str = "nemo"
+    buffer_size_bytes: int | None = None
+    num_buffers: int | None = None
+
+
 class GenerationInterface(ABC):
     """Abstract base class defining the interface for RL policies."""
 
@@ -330,6 +378,11 @@ class GenerationInterface(ABC):
     def finish_generation(self, *args: Any, **kwargs: Any) -> bool:
         pass
 
+    @abstractmethod
+    def shutdown(self) -> bool:
+        """Shut down generation resources; repeated calls must be safe."""
+        pass
+
     @property
     def requires_kv_scale_sync(self) -> bool:
         """Whether the generation backend requires KV cache scales synchronization."""
@@ -347,6 +400,14 @@ class GenerationInterface(ABC):
         """Update the model weights from collective communication."""
         raise NotImplementedError
 
+    def get_collective_sender_spec(self) -> CollectiveSenderSpec:
+        """Return policy-side NCCL protocol and packed-buffer requirements."""
+        return CollectiveSenderSpec()
+
+    def get_inference_world_size(self) -> int | None:
+        """Return a backend-specific collective world size when required."""
+        return None
+
     def prepare_nccl_reshard_refit_info(self, refit_info: dict) -> None:
         """Prepare per-layer param metadata for nccl_reshard-based refit."""
         raise NotImplementedError
@@ -354,6 +415,23 @@ class GenerationInterface(ABC):
     def nccl_reshard_refit(self) -> list[ray.ObjectRef]:
         """Receive weights from training workers via nccl_reshard."""
         raise NotImplementedError
+
+    def attach_fleet_health(self, monitor: Any, selector: Any) -> None:
+        """Route this backend's shard selection through fleet health.
+
+        Declared here rather than discovered with ``hasattr`` at the call site, so an
+        unsupported backend says so itself and the capability is greppable from the
+        interface. Same shape as the refit hooks above.
+
+        Args:
+            monitor: ``GenerationFleetHealth`` owning shard eligibility, which the
+                backend also reports observed failures and successes to.
+            selector: ``HealthyShardSelector`` picking among the serving shards.
+        """
+        raise NotImplementedError(
+            "async_rl.generation_fleet_health.enabled=true is not supported for the "
+            f"{type(self).__name__} generation backend"
+        )
 
     # Optional hook; backends may override to invalidate any reusable caches
     # (e.g., vLLM prefix/KV caches) after weight updates.

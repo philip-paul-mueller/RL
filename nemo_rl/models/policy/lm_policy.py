@@ -56,6 +56,10 @@ from nemo_rl.utils.flops_tracker import (
     get_default_hf_config,
     get_theoretical_tflops,
 )
+from nemo_rl.utils.multimodal_payload_metrics import (
+    collect_sharded_multimodal_payload_metrics,
+    print_multimodal_payload_metrics,
+)
 from nemo_rl.utils.timer import Timer
 
 PathLike = Union[str, "os.PathLike[Any]"]
@@ -97,7 +101,9 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         init_reference_model: bool = True,
         processor: Optional[AutoProcessor] = None,
         worker_extension_cls_fqn: Optional[str] = None,
+        skip_weight_load: bool = False,
     ):
+        self.debug_payload_metrics = False
         if weights_path:
             weights_path = os.path.abspath(weights_path)
         if optimizer_path:
@@ -258,6 +264,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             worker_sharding_annotations=self.sharding_annotations,
             pre_init_communication_queue=pre_init_queue,
         )
+        if skip_weight_load:
+            worker_kwargs["skip_weight_load"] = True
 
         if use_v2:
             # DTensor v2 workers reconstruct tokenizer/processor locally to avoid
@@ -338,6 +346,9 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 "input_lengths_key": "input_lengths",
                 "sequence_length_pad_multiple": sequence_length_pad_multiple,
             }
+            microbatch_order = config["sequence_packing"].get("microbatch_order")
+            if microbatch_order is not None:
+                self.sequence_packing_args["microbatch_order"] = microbatch_order
             assert not config["dynamic_batching"]["enabled"], (
                 "Sequence Packing is exclusive of Dynamic Batching. Please disable Dynamic Batching"
             )
@@ -390,7 +401,13 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         return results
 
     def init_collective(
-        self, ip: str, port: int, world_size: int, *, train_world_size: int
+        self,
+        ip: str,
+        port: int,
+        world_size: int,
+        *,
+        train_world_size: int,
+        nccl_peer: str = "nemo",
     ) -> list[ray.ObjectRef]:
         """Initialize the collective communication."""
         futures = self.worker_group.run_all_workers_single_data(
@@ -399,6 +416,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             port=port,
             world_size=world_size,
             train_world_size=train_world_size,
+            nccl_peer=nccl_peer,
         )
         # this function should co-work with vllm, so we should wait for all futures to complete outside
         return futures
@@ -517,6 +535,22 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             )
         return sharded_data
 
+    def _report_sharded_payload(
+        self,
+        sharded_data: list["SlicedDataDict"],
+        boundary: str,
+    ) -> None:
+        """Measure the exact unique per-DP-shard Ray arguments."""
+        if not self.debug_payload_metrics:
+            return
+        print_multimodal_payload_metrics(
+            collect_sharded_multimodal_payload_metrics(
+                sharded_data,
+                boundary,
+                enabled=True,
+            )
+        )
+
     def get_logprobs(
         self,
         data: BatchedDataDict[GenerationDatumSpec],
@@ -531,6 +565,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         """
         with timer.time("get_logprobs/shard_data") if timer else nullcontext():
             sharded_data, unsorted_data_indices = self._shard_for_logprob(data)
+        self._report_sharded_payload(sharded_data, "policy_get_logprobs")
 
         with (
             timer.time("get_logprobs/submit_logprob_futures")
@@ -579,6 +614,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             else nullcontext()
         ):
             sharded_data, unsorted_data_indices = self._shard_for_logprob(data)
+        self._report_sharded_payload(sharded_data, "policy_get_reference_logprobs")
 
         with (
             timer.time(
@@ -745,6 +781,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         # Shard and replicate the batch
         with timer.time("policy_training/sharding_data") if timer else nullcontext():
             sharded_data = self._shard_for_train(data, batch_size)
+        self._report_sharded_payload(sharded_data, "policy_train")
 
         if self.flops_tracker is not None:
             self.flops_tracker.reset()
@@ -921,9 +958,17 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         futures = self.worker_group.run_all_workers_single_data("prepare_for_training")
         ray.get(futures)
 
-    def prepare_for_lp_inference(self, *args: Any, **kwargs: Any) -> None:
+    def prepare_for_lp_inference(self, keep_train_buffers: bool = False) -> None:
+        """Put every worker in eval mode for logprob inference.
+
+        Args:
+            keep_train_buffers: Leave grad buffers and optimizer state on CUDA.
+                Set this when a train step is already open, so that gradients
+                accumulated by earlier streaming chunks survive; see
+                ``MegatronPolicyWorker.prepare_for_lp_inference``.
+        """
         futures = self.worker_group.run_all_workers_single_data(
-            "prepare_for_lp_inference"
+            "prepare_for_lp_inference", keep_train_buffers=keep_train_buffers
         )
         ray.get(futures)
 
@@ -989,6 +1034,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 dp_size,
                 batch_size=None,
             )
+        self._report_sharded_payload(sharded_data, "policy_kv_calibration")
 
         futures = self.worker_group.run_all_workers_sharded_data(
             "calibrate_qkv_fp8_scales",
@@ -1066,12 +1112,18 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         )
 
     def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
+        self,
+        kv_scales: Optional[dict[str, float]] = None,
+        *,
+        buffer_size_bytes: Optional[int] = None,
+        num_buffers: Optional[int] = None,
     ) -> list[ray.ObjectRef]:
         """Broadcast the weights for collective communication."""
         futures = self.worker_group.run_all_workers_single_data(
             "broadcast_weights_for_collective",
             kv_scales=kv_scales,
+            buffer_size_bytes=buffer_size_bytes,
+            num_buffers=num_buffers,
         )
         # this function should co-work with vllm, so we should wait for all futures to complete outside
         return futures

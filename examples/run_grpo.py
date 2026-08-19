@@ -19,7 +19,12 @@ import time
 
 from omegaconf import OmegaConf
 
-from nemo_rl.algorithms.grpo import MasterConfig, grpo_train, setup
+from nemo_rl.algorithms.grpo import (
+    MasterConfig,
+    grpo_train,
+    setup,
+    shutdown_environments,
+)
 from nemo_rl.algorithms.utils import get_tokenizer
 from nemo_rl.data.utils import setup_response_data
 from nemo_rl.distributed.virtual_cluster import init_ray
@@ -174,81 +179,79 @@ def main() -> None:
             print(f"  {label}: {value:.1f}s")
     print("=" * 60 + "\n", flush=True)
 
-    # Check if async mode is enabled
-    if "async_grpo" in config.grpo and config.grpo["async_grpo"]["enabled"]:
-        # Async GRPO does not support dynamic sampling, reward scaling, or reward shaping (DAPO features)
-        unsupported_features = [
-            "use_dynamic_sampling",
-            "reward_scaling",
-            "reward_shaping",
-        ]
+    try:
+        # Check if async mode is enabled
+        if config.grpo.async_grpo.enabled:
+            # Async GRPO does not support dynamic sampling, reward scaling, or reward shaping (DAPO features)
+            if config.grpo.use_dynamic_sampling:
+                raise NotImplementedError(
+                    "use_dynamic_sampling is not supported with async GRPO"
+                )
+            if config.grpo.reward_scaling.enabled:
+                raise NotImplementedError(
+                    "reward_scaling is not supported with async GRPO"
+                )
+            if config.grpo.reward_shaping.enabled:
+                raise NotImplementedError(
+                    "reward_shaping is not supported with async GRPO"
+                )
 
-        for feature in unsupported_features:
-            if feature not in config.grpo:
-                continue
+            # Async GRPO does not support multiple dataloaders
+            if config.data["use_multiple_dataloader"]:
+                raise NotImplementedError(
+                    "use_multiple_dataloader is not supported with async GRPO"
+                )
 
-            if feature == "use_dynamic_sampling":
-                if config.grpo[feature]:
-                    raise NotImplementedError(
-                        f"{feature} is not supported with async GRPO"
-                    )
-            else:
-                if config.grpo[feature]["enabled"]:
-                    raise NotImplementedError(
-                        f"{feature} is not supported with async GRPO"
-                    )
+            from nemo_rl.algorithms.grpo import async_grpo_train
 
-        # Async GRPO does not support multiple dataloaders
-        if config.data["use_multiple_dataloader"]:
-            raise NotImplementedError(
-                "use_multiple_dataloader is not supported with async GRPO"
+            print("🚀 Running async GRPO training")
+
+            # Run async GRPO training
+            async_grpo_train(
+                policy=policy,
+                policy_generation=policy_generation,
+                dataloader=dataloader,
+                val_dataloader=val_dataloader,
+                tokenizer=tokenizer,
+                loss_fn=loss_fn,
+                task_to_env=task_to_env,
+                val_task_to_env=val_task_to_env,
+                logger=logger,
+                checkpointer=checkpointer,
+                grpo_save_state=grpo_state,
+                master_config=master_config,
+                max_trajectory_age_steps=config.grpo.async_grpo.max_trajectory_age_steps,
+                teacher_worker_groups=teacher_worker_groups,
+                alias_to_group_alias=alias_to_group_alias,
             )
-
-        from nemo_rl.algorithms.grpo import async_grpo_train
-
-        print("🚀 Running async GRPO training")
-
-        async_config = config.grpo["async_grpo"]
-        # Run async GRPO training
-        async_grpo_train(
-            policy=policy,
-            policy_generation=policy_generation,
-            dataloader=dataloader,
-            val_dataloader=val_dataloader,
-            tokenizer=tokenizer,
-            loss_fn=loss_fn,
-            task_to_env=task_to_env,
-            val_task_to_env=val_task_to_env,
-            logger=logger,
-            checkpointer=checkpointer,
-            grpo_save_state=grpo_state,
-            master_config=master_config,
-            max_trajectory_age_steps=async_config["max_trajectory_age_steps"],
-            teacher_worker_groups=teacher_worker_groups,
-            alias_to_group_alias=alias_to_group_alias,
-        )
-    else:
-        # Two parallel synchronous trainers (verl-style — main_ppo.py vs
-        # main_ppo_sync.py). data_plane.enabled selects which one runs.
-        trainer = _select_trainer(master_config)
-        # grpo_train_sync defers checkpoint finalization to the checkpointer's
-        # background threads; the context manager guarantees they are flushed on
-        # exit. (grpo_train also flushes internally; shutdown() is idempotent.)
-        with checkpointer:
-            trainer(
-                policy,
-                policy_generation,
-                dataloader,
-                val_dataloader,
-                tokenizer,
-                loss_fn,
-                task_to_env,
-                val_task_to_env,
-                logger,
-                checkpointer,
-                grpo_state,
-                master_config,
-            )
+        else:
+            # Two parallel synchronous trainers (verl-style — main_ppo.py vs
+            # main_ppo_sync.py). data_plane.enabled selects which one runs.
+            trainer = _select_trainer(master_config)
+            # grpo_train_sync defers checkpoint finalization to the checkpointer's
+            # background threads; the context manager guarantees they are flushed on
+            # exit. (grpo_train also flushes internally; shutdown() is idempotent.)
+            with checkpointer:
+                trainer(
+                    policy,
+                    policy_generation,
+                    dataloader,
+                    val_dataloader,
+                    tokenizer,
+                    loss_fn,
+                    task_to_env,
+                    val_task_to_env,
+                    logger,
+                    checkpointer,
+                    grpo_state,
+                    master_config,
+                )
+    finally:
+        shutdown_environments(task_to_env, val_task_to_env)
+        try:
+            policy_generation.shutdown()
+        except Exception as error:
+            print(f"Error shutting down generation: {error}", flush=True)
 
 
 if __name__ == "__main__":

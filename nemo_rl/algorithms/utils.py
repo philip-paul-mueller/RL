@@ -740,10 +740,11 @@ def print_performance_metrics(
     colocated_inference = master_config.policy["generation"]["colocated"]["enabled"]
 
     # Idle Time from Training Worker (Async GRPO only)
-    grpo_config = getattr(master_config, "grpo", {})
     if (
-        "async_grpo" in grpo_config and grpo_config["async_grpo"]["enabled"]
-    ) and not colocated_inference:
+        "exposed_generation" in timing_metrics
+        and master_config.grpo.async_grpo.enabled
+        and not colocated_inference
+    ):
         exposed_generation_time = timing_metrics["exposed_generation"]
         training_worker_idle_time_ratio = (
             0
@@ -764,14 +765,15 @@ def print_performance_metrics(
         )
 
     # Detect which algorithm config key is being used
-    algo_config = (
-        getattr(master_config, "grpo", None)
-        or getattr(master_config, "ppo", None)
-        or {}
-    )
-    number_of_samples_per_step = algo_config.get(
-        "num_prompts_per_step", 1
-    ) * algo_config.get("num_generations_per_prompt", 1)
+    grpo_config = getattr(master_config, "grpo", None)
+    algo_config = grpo_config or getattr(master_config, "ppo", None) or {}
+    if isinstance(algo_config, dict):
+        num_prompts_per_step = algo_config.get("num_prompts_per_step", 1)
+        num_generations_per_prompt = algo_config.get("num_generations_per_prompt", 1)
+    else:
+        num_prompts_per_step = algo_config.num_prompts_per_step
+        num_generations_per_prompt = algo_config.num_generations_per_prompt
+    number_of_samples_per_step = num_prompts_per_step * num_generations_per_prompt
 
     if colocated_inference:
         training_num_gpus = total_num_gpus
@@ -918,13 +920,13 @@ def print_performance_metrics(
     return performance_metrics
 
 
-def log_generation_metrics_to_wandb(
+def log_generation_metrics(
     generation_logger_metrics: dict[str, dict[int, list[Any]]],
     step: int,
     timeline_interval: float,
     logger: Logger,
 ) -> None:
-    """Log generation metrics to wandb.
+    """Log generation metric timelines to every configured logger backend.
 
     Args:
         generation_logger_metrics: Dictionary of generation logger metrics
