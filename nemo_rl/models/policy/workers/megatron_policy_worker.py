@@ -2184,6 +2184,30 @@ class MegatronPolicyWorkerImpl(
             post_iter_func=lambda x: x[1],
         )
 
+        # LEAK EXPERIMENT (mem_trace of slurm-3125000): every refit leaves
+        # ~7.5 GB/rank of freed-but-cached PINNED host memory behind —
+        # thousands of "/dev/zero (deleted)" shared mappings in this process,
+        # never returned to the OS by torch's CachingHostAllocator and
+        # Shmem-accounted on GH200, stair-stepping the node to OOM at ~step 3
+        # on the 700B.  Flushing the host cache after the transfer returns
+        # the pages; the cost is re-pinning next refit's staging buffers.
+        if os.getenv("NRL_EMPTY_HOST_CACHE_AFTER_REFIT", "0") == "1":
+            _empty = getattr(torch._C, "_host_emptyCache", None) or getattr(
+                getattr(torch.cuda, "memory", None), "_host_emptyCache", None
+            )
+            if _empty is not None:
+                _empty()
+                print(
+                    f"[rank {self.rank}] emptied pinned-host cache after refit",
+                    flush=True,
+                )
+            else:
+                print(
+                    "[NRL_EMPTY_HOST_CACHE_AFTER_REFIT] no host empty-cache API "
+                    "in this torch; leak experiment inactive",
+                    flush=True,
+                )
+
     def _build_layer_to_pp_stage(
         self, pp_size: int, layer_prefix: str
     ) -> dict[str, int]:
