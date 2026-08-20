@@ -17,26 +17,35 @@ The driver itself is untouched; image and branch ship together as usual.
     URLs are replaced by a name-only dep; **source build**).
 - `uv.lock`: ⚠️ **NOT yet regenerated** — see the procedure below.
 
-## Relock procedure (needs network + the container's torch)
+## Relock procedure (the image build does it — RELOCK build-arg)
 
-The vLLM fork builds from source and its build backend needs torch at
-metadata time, so run the relock **inside the current image** (which has
-the toolchain) on a machine with network, e.g. an interactive container
-on a login/compute node:
+`uv lock` needs uv 0.11.28 + torch/toolchain for the vLLM fork's
+metadata build, and no local image exists to run it in — so the build
+container itself does the relock (Containerfile arg added in
+alps-extended-images `a83467e`):
 
 ```bash
-git switch apertus-stack
-UV_OFFLINE=0 uv lock          # resolves the forks; vllm metadata build takes a while
+# 1. one-time relock build (make sure the clone layer is NOT served from
+#    cache — the branch HEAD moved; --no-cache is the blunt safe option)
+podman build ... --build-arg NEMORL_COMMIT=apertus-stack --build-arg RELOCK=1 ...
+# expect a LONG build: the swiss vllm compiles its CUDA kernels from source
+
+# 2. extract the fresh lock from the image and commit it — MANDATORY:
+#    the runtime driver checks the branch out in-container; a committed
+#    lock that differs from the baked venvs re-resolves into the enroot
+#    overlay (or fails offline)
+podman create --name relock <image>
+podman cp relock:/workdir/nemo_rl/uv.lock uv.lock && podman rm relock
 git add uv.lock && git commit -s -m "chore(apertus): relock with swiss-ai forks"
 git push fork apertus-stack
+
+# 3. (optional but recommended) rebuild once WITHOUT RELOCK to confirm
+#    the committed lock reproduces the image as a pure consumer
 ```
 
-Then build the image:
-
-```bash
-podman build ... --build-arg NEMORL_COMMIT=apertus-stack ...
-# expect a LONG build: the swiss vllm compiles its CUDA kernels from source
-```
+If `uv lock` fails in step 1 with another version conflict, it is the
+sglang shape again (risk #1 below) — fix with another
+override-dependencies entry and rebuild.
 
 And run with:
 
