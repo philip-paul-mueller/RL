@@ -1712,6 +1712,17 @@ class MegatronPolicyWorkerImpl(
             if self.should_disable_forward_pre_hook:
                 self.enable_forward_pre_hook()
 
+        # LEAK EXPERIMENT (post-mortem of slurm-3129890): the swap copy above
+        # is a model-sized PINNED allocation (torch pins the destination of
+        # every non_blocking D2H copy).  Freeing it only at the NEXT refit is
+        # too late — the training phase in between then runs ~95 GiB/node
+        # short and stalls its collectives under memory pressure.  Flush here,
+        # at swap exit, so training starts with the headroom restored.
+        if os.getenv("NRL_EMPTY_HOST_CACHE_AFTER_REFIT", "0") == "1":
+            del model_state_dict
+            torch.cuda.synchronize()
+            self._empty_pinned_host_cache("post-logprob-swap")
+
     @wrap_with_nvtx_name("megatron_policy_worker/get_topk_logits")
     def get_topk_logits(
         self,
@@ -2190,7 +2201,9 @@ class MegatronPolicyWorkerImpl(
                     flush=True,
                 )
             return
-        _stats_fn = getattr(torch.cuda, "host_memory_stats", None)
+        _stats_fn = getattr(torch.cuda, "host_memory_stats", None) or getattr(
+            getattr(torch.cuda, "memory", None), "host_memory_stats", None
+        )
 
         def _snap() -> Optional[tuple[float, float]]:
             if _stats_fn is None:
@@ -2200,6 +2213,16 @@ class MegatronPolicyWorkerImpl(
                 alloc = s.get("allocated_bytes.all.current")
                 reserv = s.get("reserved_bytes.all.current")
                 if alloc is None or reserv is None:
+                    # Key layout differs from expectation — dump the keys once
+                    # so the next run's log tells us the right ones.
+                    if self.rank == 0 and not getattr(
+                        self, "_host_stats_keys_dumped", False
+                    ):
+                        self._host_stats_keys_dumped = True
+                        print(
+                            f"[rank 0] host_memory_stats keys: {sorted(s.keys())}",
+                            flush=True,
+                        )
                     return None
                 return (alloc / 2**30, reserv / 2**30)
             except Exception:
