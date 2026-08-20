@@ -322,7 +322,10 @@ explicit = true
 [tool.uv]
 managed = true
 environments = [
-  "python_version == '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+  # APERTUS-STACK: aarch64-only (upstream also lists x86_64).  This branch
+  # exists solely to build the GH200 image, and the old vllm fork keeps
+  # failing resolution FIRST on the x86_64 split (phantom errors for a
+  # platform we never run) — restricting implements uv's own hint.
   "python_version == '3.13' and sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
 preview = true # Enable preview features like extra-build-dependencies
@@ -372,6 +375,13 @@ override-dependencies = [
   # transformers requirement with the fork; keep the rev in lockstep with
   # [tool.uv.sources].
   "transformers @ git+https://github.com/swiss-ai/transformers.git@3797303dda74844e3d1f8977ff5518bb91f818b4",
+  # APERTUS-STACK: the vllm fork (0.23.1rc1 base) pins pynvvideocodec==2.1.0,
+  # which ships no cp313 and no aarch64 wheels — unresolvable on our stack.
+  # It is vllm's CUDA video-DECODE backend, unused for text GRPO; exclude it
+  # everywhere via the impossible marker (the opencv precedent above).  If
+  # vllm turns out to import it unconditionally at runtime, that surfaces as
+  # a clean ModuleNotFoundError at first light.
+  "pynvvideocodec; sys_platform == 'never'",
   "nvidia-modelopt[torch]>=0.44.0a0",
   "torch==2.11.0",
   # sglang has conflicting llguidance versions than vllm, so enforcing vllm's version since it's newer

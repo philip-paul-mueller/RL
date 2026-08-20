@@ -79,6 +79,18 @@ NEMORL_BRANCH=apertus-stack sbatch train-gsm8k-apertus70b-nemorl.sh
    override replaces ALL transitive transformers constraints.  Expect
    repeats of this shape for any other exact `transformers==` pin;
    same fix.
+   **HIT #2 (second build, 2026-08-20)**: with sglang resolved, the
+   fork's real metadata surfaced — it identifies as
+   `vllm 0.23.1rc1…+cu131` (an OLDER vllm than our 0.25.1, built
+   against cu131; risk #2 below is therefore concrete, not
+   hypothetical) and pins `pynvvideocodec==2.1.0`, which ships neither
+   cp313 nor aarch64 wheels.  Fixed by excluding it via the
+   impossible-marker override (`pynvvideocodec; sys_platform ==
+   'never'` — the opencv precedent); it is vllm's CUDA video-decode
+   backend, unused for text GRPO.  Also restricted
+   `tool.uv.environments` to aarch64-only on this branch so future
+   conflicts report the platform we actually run instead of failing
+   first on the x86_64 split.
    ⚠️ Note on that build's log: it failed at STEP 40 (venv prefetch),
    but every earlier `uv sync --frozen` step installed from the STALE
    uv.lock — i.e. the UPSTREAM stack, not the forks (`--frozen` never
