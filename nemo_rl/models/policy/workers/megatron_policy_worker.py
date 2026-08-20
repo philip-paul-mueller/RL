@@ -2210,8 +2210,11 @@ class MegatronPolicyWorkerImpl(
                 return None
             try:
                 s = _stats_fn()
-                alloc = s.get("allocated_bytes.all.current")
-                reserv = s.get("reserved_bytes.all.current")
+                # Host-allocator stats (key dump from slurm-3131696): "active"
+                # = blocks NOT on the free list (in use or event-pending),
+                # "allocated" = total pinned bytes held from the OS.
+                alloc = s.get("active_bytes.current")
+                reserv = s.get("allocated_bytes.current")
                 if alloc is None or reserv is None:
                     # Key layout differs from expectation — dump the keys once
                     # so the next run's log tells us the right ones.
