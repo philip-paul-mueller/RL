@@ -365,6 +365,13 @@ override-dependencies = [
   "nvidia-nvshmem-cu13>=3.6.5; sys_platform != 'darwin'",
   "opencv-python-headless; sys_platform == 'never'",
   "timm<=1.0.22",
+  # APERTUS-STACK: the [tool.uv.sources] pin below makes the swiss-ai fork
+  # (version 5.14.0.dev0) the ONLY transformers in the resolution universe,
+  # so sglang's exact pin transformers==5.6.0 becomes unsatisfiable (same
+  # problem shape as the timm override above).  Override every transitive
+  # transformers requirement with the fork; keep the rev in lockstep with
+  # [tool.uv.sources].
+  "transformers @ git+https://github.com/swiss-ai/transformers.git@3797303dda74844e3d1f8977ff5518bb91f818b4",
   "nvidia-modelopt[torch]>=0.44.0a0",
   "torch==2.11.0",
   # sglang has conflicting llguidance versions than vllm, so enforcing vllm's version since it's newer

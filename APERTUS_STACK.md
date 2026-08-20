@@ -50,6 +50,21 @@ NEMORL_BRANCH=apertus-stack sbatch train-gsm8k-apertus70b-nemorl.sh
    transformers ranges (e.g. megatron-bridge, modelopt); the fork's
    version string may fall outside them.  Fix by loosening the offending
    constraint on this branch — same pattern as the three already done.
+   **HIT (first image build, 2026-08-19)**: sglang==0.5.12.post1 pins
+   `transformers==5.6.0` exactly; with the source pin the fork
+   (5.14.0.dev0) is the only transformers in existence → the sglang
+   split is unsatisfiable on every platform (the error names the x86_64
+   split only because the resolver tried it first).  Fixed by adding
+   the fork to `override-dependencies` (the timm precedent) — an
+   override replaces ALL transitive transformers constraints.  Expect
+   repeats of this shape for any other exact `transformers==` pin;
+   same fix.
+   ⚠️ Note on that build's log: it failed at STEP 40 (venv prefetch),
+   but every earlier `uv sync --frozen` step installed from the STALE
+   uv.lock — i.e. the UPSTREAM stack, not the forks (`--frozen` never
+   compares the lock against pyproject).  STEP 40's bare `uv run` was
+   simply the first command that resolved the new pyproject.  A build
+   only bakes the fork stack after the relock below is committed.
 2. **vLLM fork build failures** (CUDA arch flags, flashinfer version
    expectations): the fork is cut from an older vLLM than our 0.25.1 —
    downstream packages that import vllm internals (nemo_rl's
