@@ -2171,11 +2171,80 @@ class MegatronPolicyWorkerImpl(
             worker_name=str(self),
         )
 
+    def _empty_pinned_host_cache(self, when: str) -> None:
+        """Return free-listed pinned-host blocks to the OS (leak experiment).
+
+        empty_cache only frees blocks whose owning tensors are dead AND whose
+        CUDA events have completed — anything still referenced or in flight is
+        untouched, so callers must pick a moment when the previous staging
+        generation is actually idle.
+        """
+        _empty = getattr(torch._C, "_host_emptyCache", None) or getattr(
+            getattr(torch.cuda, "memory", None), "_host_emptyCache", None
+        )
+        if _empty is None:
+            if self.rank == 0:
+                print(
+                    "[NRL_EMPTY_HOST_CACHE_AFTER_REFIT] no host empty-cache API "
+                    "in this torch; leak experiment inactive",
+                    flush=True,
+                )
+            return
+        _stats_fn = getattr(torch.cuda, "host_memory_stats", None)
+
+        def _snap() -> Optional[tuple[float, float]]:
+            if _stats_fn is None:
+                return None
+            try:
+                s = _stats_fn()
+                alloc = s.get("allocated_bytes.all.current")
+                reserv = s.get("reserved_bytes.all.current")
+                if alloc is None or reserv is None:
+                    return None
+                return (alloc / 2**30, reserv / 2**30)
+            except Exception:
+                return None
+
+        before = _snap()
+        _empty()
+        # Bare confirmation on every rank (Ray dedups identical lines);
+        # numbers only on rank 0 to keep 384-rank logs readable.
+        print(
+            f"emptied pinned-host cache ({when})",
+            flush=True,
+        )
+        if self.rank == 0 and before is not None:
+            after = _snap()
+            if after is not None:
+                print(
+                    f"[rank 0] pinned-host cache ({when}): "
+                    f"live {before[0]:.1f} GiB, "
+                    f"cached {before[1] - before[0]:.1f} GiB, "
+                    f"freed {before[1] - after[1]:.1f} GiB",
+                    flush=True,
+                )
+
     @torch.no_grad()
     def broadcast_weights_for_collective(
         self, kv_scales: Optional[dict[str, float]] = None
     ) -> None:
         """Broadcast the weights for collective communication."""
+        # LEAK EXPERIMENT (mem_trace of slurm-3125000 / post-mortem of
+        # slurm-3129449): every refit leaves ~20 GB/rank of PINNED host
+        # staging behind — "/dev/zero (deleted)" shared mappings hoarded by
+        # torch's CachingHostAllocator, Shmem-accounted on GH200, stair-
+        # stepping the node to OOM.  Flushing ONLY after the broadcast is not
+        # enough at 700B scale (3129449): at that moment the staging is still
+        # owned by in-flight broadcast work, its events incomplete, so
+        # empty_cache frees nothing.  Hence two flushes:
+        #   pre-refit  — the PREVIOUS generation idled through a whole
+        #                training step, its events are complete → freed here;
+        #   post-refit — after a stream sync so this generation is freeable
+        #                too (sync cost is noise next to the broadcast).
+        flush_pinned = os.getenv("NRL_EMPTY_HOST_CACHE_AFTER_REFIT", "0") == "1"
+        if flush_pinned:
+            self._empty_pinned_host_cache("pre-refit")
+
         # param_iterator will return (name, tensor), we only need tensor.
         packed_broadcast_producer(
             iterator=self._iter_params_with_optional_kv_scales(kv_scales=kv_scales),
@@ -2184,29 +2253,9 @@ class MegatronPolicyWorkerImpl(
             post_iter_func=lambda x: x[1],
         )
 
-        # LEAK EXPERIMENT (mem_trace of slurm-3125000): every refit leaves
-        # ~7.5 GB/rank of freed-but-cached PINNED host memory behind —
-        # thousands of "/dev/zero (deleted)" shared mappings in this process,
-        # never returned to the OS by torch's CachingHostAllocator and
-        # Shmem-accounted on GH200, stair-stepping the node to OOM at ~step 3
-        # on the 700B.  Flushing the host cache after the transfer returns
-        # the pages; the cost is re-pinning next refit's staging buffers.
-        if os.getenv("NRL_EMPTY_HOST_CACHE_AFTER_REFIT", "0") == "1":
-            _empty = getattr(torch._C, "_host_emptyCache", None) or getattr(
-                getattr(torch.cuda, "memory", None), "_host_emptyCache", None
-            )
-            if _empty is not None:
-                _empty()
-                print(
-                    f"[rank {self.rank}] emptied pinned-host cache after refit",
-                    flush=True,
-                )
-            else:
-                print(
-                    "[NRL_EMPTY_HOST_CACHE_AFTER_REFIT] no host empty-cache API "
-                    "in this torch; leak experiment inactive",
-                    flush=True,
-                )
+        if flush_pinned:
+            torch.cuda.synchronize()
+            self._empty_pinned_host_cache("post-refit")
 
     def _build_layer_to_pp_stage(
         self, pp_size: int, layer_prefix: str
