@@ -15,35 +15,46 @@ The driver itself is untouched; image and branch ship together as usual.
   - `vllm` → `git+https://github.com/swiss-ai/vllm.git
     @a601a9d998ddeb488f0c17e8512874b116aa7658` (the stock 0.25.1 wheel
     URLs are replaced by a name-only dep; **source build**).
-- `uv.lock`: ⚠️ **NOT yet regenerated** — see the procedure below.
+- `uv.lock`: **DELETED and .gitignore'd — a build artifact on this
+  branch, by design** (Philip, 2026-08-20).  `pyproject.toml` is the
+  authoritative dependency spec; the image build generates the lock.
 
-## Relock procedure (the image build does it — RELOCK build-arg)
+## The lockless-branch design (why no uv.lock here)
 
-`uv lock` needs uv 0.11.28 + torch/toolchain for the vLLM fork's
-metadata build, and no local image exists to run it in — so the build
-container itself does the relock (Containerfile arg added in
-alps-extended-images `a83467e`):
+Regenerating the lock needs uv 0.11.28 + torch/CUDA/aarch64 for the
+vLLM fork's metadata build (vllm's setup.py computes its dependency
+set from the machine it runs on) — the build container is the only
+environment we have that computes it correctly.  So the Containerfile
+generates the lock when it is absent (alps-extended-images: RELOCK
+logic), and every `uv sync --frozen` after that consumes the fresh
+resolution — the image is internally consistent by construction.
+
+Why deleting (not just staling) the lock is what makes this safe at
+RUNTIME: the driver runs `git switch -C <branch> fork/<branch>` inside
+the container at every job start.  A tracked-but-modified uv.lock
+would make that checkout FATAL the first time the branch touches the
+file; an untracked+ignored uv.lock survives every switch untouched.
+
+Costs, accepted deliberately:
+- Transitive resolution can drift between builds (the two forks are
+  SHA-pinned in pyproject; everything else re-resolves).  The IMAGE is
+  the artifact of record — the generated lock lives at
+  /workdir/nemo_rl/uv.lock inside it, and the build log prints its
+  sha256 for cross-referencing.
+- ⚠️ If anyone RE-ADDS a tracked uv.lock to this branch later, the
+  runtime `git switch` will error on the untracked-file collision in
+  existing images ("untracked working tree file would be overwritten").
+  Un-ignore + re-add only together with a fresh image.
+
+Build (no special args; mind the clone-layer cache — the branch HEAD
+moved, so bust it, e.g. `--no-cache`):
 
 ```bash
-# 1. one-time relock build (make sure the clone layer is NOT served from
-#    cache — the branch HEAD moved; --no-cache is the blunt safe option)
-podman build ... --build-arg NEMORL_COMMIT=apertus-stack --build-arg RELOCK=1 ...
+podman build ... --build-arg NEMORL_COMMIT=apertus-stack ...
 # expect a LONG build: the swiss vllm compiles its CUDA kernels from source
-
-# 2. extract the fresh lock from the image and commit it — MANDATORY:
-#    the runtime driver checks the branch out in-container; a committed
-#    lock that differs from the baked venvs re-resolves into the enroot
-#    overlay (or fails offline)
-podman create --name relock <image>
-podman cp relock:/workdir/nemo_rl/uv.lock uv.lock && podman rm relock
-git add uv.lock && git commit -s -m "chore(apertus): relock with swiss-ai forks"
-git push fork apertus-stack
-
-# 3. (optional but recommended) rebuild once WITHOUT RELOCK to confirm
-#    the committed lock reproduces the image as a pure consumer
 ```
 
-If `uv lock` fails in step 1 with another version conflict, it is the
+If the lock-generation step fails with a version conflict, it is the
 sglang shape again (risk #1 below) — fix with another
 override-dependencies entry and rebuild.
 
