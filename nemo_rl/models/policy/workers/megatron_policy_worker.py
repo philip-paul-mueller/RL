@@ -2264,8 +2264,15 @@ class MegatronPolicyWorkerImpl(
         #                training step, its events are complete → freed here;
         #   post-refit — after a stream sync so this generation is freeable
         #                too (sync cost is noise next to the broadcast).
+        # NOTE: every flush is preceded by a synchronize() on purpose — torch
+        # <= 2.11 has a stuck-event bug (pytorch#183501): process_events pops
+        # the event queue from the BACK and stops at the FIRST incomplete
+        # event, so a single in-flight event hides every completed block from
+        # the free list.  After a full sync no event is incomplete, so the
+        # drain always works despite the bug.
         flush_pinned = os.getenv("NRL_EMPTY_HOST_CACHE_AFTER_REFIT", "0") == "1"
         if flush_pinned:
+            torch.cuda.synchronize()
             self._empty_pinned_host_cache("pre-refit")
 
         # param_iterator will return (name, tensor), we only need tensor.
