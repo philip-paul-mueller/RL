@@ -101,6 +101,16 @@ NEMORL_BRANCH=apertus-stack sbatch train-gsm8k-apertus70b-nemorl.sh
    expectations): the fork is cut from an older vLLM than our 0.25.1 —
    downstream packages that import vllm internals (nemo_rl's
    vllm_backend extension!) may need version guards.
+   **HIT #3 (slurm-3132948, 2026-08-20)** — but NOT a code failure:
+   the 391-object CUDA build at ninja's default parallelism (nproc =
+   288) OOMed the diskless build node (112 oom_kill events); killed
+   compilers left truncated /tmp .s files that `as` reported as
+   garbage "unknown mnemonic" errors (`yte` = `.byte` with chunks
+   missing — remember this signature: corrupted intermediates, not a
+   toolchain bug).  Fixed in alps `9d4d9b3`: `MAX_JOBS=32` +
+   `TORCH_CUDA_ARCH_LIST=9.0a` (GH200-only kernels; also pins runtime
+   JIT arch).  Positive side-finding: the lock generation SUCCEEDED in
+   that build — resolution is done; remaining risk is compile+runtime.
 3. **`AutoModelForMultimodalLM`**: Apertus v1.5 loads via a NEW auto
    class.  NeMo-RL's dtensor/automodel worker load path must be checked
    (and possibly extended) to construct it; the VLM pipeline
